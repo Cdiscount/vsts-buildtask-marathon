@@ -1,162 +1,107 @@
-import tl = require('vsts-task-lib');
-import request = require('request');
+import request = require('request-promise-any');
 import fs = require('fs');
-import marathonconfig = require('./marathonconfig');
-import MarathonConfig = marathonconfig.MarathonConfig;
+import { MarathonConfig, OptionUrl } from './marathonconfig';
+
+
+
+interface MarathonDeployment {
+    deploymentId: string,
+    version: string,
+    message: string,
+}
 
 export class MarathonApi {
+    static successEventName: string = 'containerDeployedSuccessful';
     config: MarathonConfig;
-    deploymentLaunched: boolean;
+    containerIsRunning: boolean = false;
     constructor(conf: MarathonConfig) {
         this.config = conf;
     }
 
-    sendToMarathon() {
-        let marathonFullAppPath = this.config.baseUrl.concat("/v2/apps/", this.config.identifier)
-        marathonFullAppPath = marathonFullAppPath.replace(/([^:]\/)\/+/g, "$1");
-        tl.debug("marathonFullAppPath : " + marathonFullAppPath);
-        let options: (request.UriOptions & request.CoreOptions) = {
-            uri: marathonFullAppPath
-        };
-        if (this.config.useBasicAuthentication) {
-            options.auth = {
-                user: this.config.marathonUser,
-                pass: this.config.marathonPassword
-            };
+    public async sendToMarathon(): Promise<boolean> {
+        const options = this.config.toOptions(OptionUrl.App);
+        let app: any = undefined;
+        try {
+            let response = await request(options);
+            app = JSON.parse(response);
+
+        } catch (error) {
+            if (this.config.failOnScaledTo0) {
+                throw new Error('Application should fail on scale 0, but it does not exist.');
+            } else if (error.statusCode && error.statusCode !== 404) {
+                throw error;
+            } else {
+                console.log('Application does not exist. It will be created.');
+            }
         }
-        request(options, this.sendToMarathonCallBack.bind(this))
+        if (this.config.failOnScaledTo0 && (app && app.app.instances === 0)) {
+            throw new Error("Application was previously scaled to 0. We won't override its config and won't restart it");
+        }
+        let deployment = await this.createOrUpdateApp(this.config.marathonFilePath);
+        const isDeploymentLaunched = await this.isDeploymentLaunched(deployment);
+        if (!isDeploymentLaunched) {
+            deployment = await this.restartApp();
+        }
+        await this.checkContainerBoot(deployment);
+        return await this.checkRunningVersion(deployment);
+
     }
 
-    sendToMarathonCallBack(error, response, body) {
-        tl.debug("Identifier : " + this.config.identifier);
-        // Error occured during request.
-        if (error) {
-            throw new Error("Request marathon error :".concat(error));
-        }
-        tl.debug(body);
-        let jsonResponse = JSON.parse(body);
-        switch (response.statusCode) {
-            case 401:
-            case 403:
-                throw new Error("Request marathon permission error :".concat(jsonResponse.message));
-            case 404:
-                this.createOrUpdateApp(this.config.marathonFilePath);
-                break;
-            case 200:
-                let nbInstances = jsonResponse.app.instances;
-                if (nbInstances > 0) {
-                    tl.debug("App ".concat(this.config.identifier, " already exists in Marathon, overriding its config and restarting it to force an image pull"))
-                    this.createOrUpdateApp(this.config.marathonFilePath);
+    private async createOrUpdateApp(marathonFilePath: string): Promise<MarathonDeployment> {
+        console.log("Creating or updating a given app. Put request with a given marathon json file.");
+        const options = this.config.toOptions(OptionUrl.App);
+        options.qs = { force: true }; //Query string data
+        options.method = 'PUT';
+        options.body = fs.createReadStream(marathonFilePath);
+        const deploy = await request(options);
+        return JSON.parse(deploy) as MarathonDeployment;
+    }
 
-                } else {
-                    var messageScaled =  "Application was previously scaled to 0. We won't override its config and won't restart it";
-                    if(this.config.failOnScaledTo0){
-                        throw new Error(messageScaled);
-                    }
-                    else{
-                        tl.warning(messageScaled);
-                    }
+    private async isDeploymentLaunched(deployment: MarathonDeployment): Promise<boolean> {
+        console.log("Checking if deployment is running...");
+        const options = this.config.toOptions(OptionUrl.Deployment);
+        const runningDeployments = (await request(options)) as string;
+        const typedDeployments = JSON.parse(runningDeployments) as any[];
+        return typedDeployments.some(d => d.id === deployment.deploymentId);
+    }
+
+    private async restartApp(): Promise<MarathonDeployment> {
+        console.log("Restart Application");
+        const options = this.config.toOptions(OptionUrl.Restart);
+        options.qs = { force: true }; //Query string data
+        options.method = 'POST';
+        const deploy = await request(options);
+        return JSON.parse(deploy) as MarathonDeployment;
+    }
+
+    private checkContainerBoot(deployment: MarathonDeployment): Promise<boolean> {
+        return new Promise<boolean>((resolve, reject) => {
+            const start = new Date().getTime();
+            let interval = setInterval(async () => {
+                var deploymentRuns = await this.isDeploymentLaunched(deployment);
+                var currentDate = new Date().getTime();
+                if (!deploymentRuns) {
+                    clearInterval(interval);
+                    resolve(!deploymentRuns);
                 }
-        }
+                else if ((currentDate - start) > this.config.maxBootTimeInMilliseconds) {
+                    clearInterval(interval);
+                    console.error(`Container did not boot within ${this.config.maxBootTimeInMilliseconds}ms`);
+                    reject(`Container did not boot within ${this.config.maxBootTimeInMilliseconds}ms`);
+                }
+            }, 1000);
+        });
     }
 
-    createOrUpdateApp(marathonFilePath: string) {
-        tl._writeLine("createOrUpdateApp method. Put request with marathon json file.");
-        tl._writeLine(fs.readFileSync(marathonFilePath).toString());
-        let marathonFullAppPath = this.config.baseUrl.concat("/v2/apps/", this.config.identifier);
-        marathonFullAppPath = marathonFullAppPath.replace(/([^:]\/)\/+/g, "$1");
-        let options: (request.UriOptions & request.CoreOptions) = {
-            uri: marathonFullAppPath,
-            qs: { force: true }, //Query string data
-            method: 'PUT',
-            body: fs.createReadStream(marathonFilePath)
-        };
-        if (this.config.useBasicAuthentication) {
-            options.auth = {
-                user: this.config.marathonUser,
-                pass: this.config.marathonPassword
-            };
-        }
-        request(options, this.createOrUpdateAppCallBack.bind(this));
-    }
-
-    createOrUpdateAppCallBack(error, response, body) {
-        // Error occured during request.
-        if (error) {
-            throw new Error("Request marathon deploy error :".concat(error));
-        }
-        tl.debug(body);
-        let jsonResponse = JSON.parse(body);
-        if (response.statusCode >= 200 && response.statusCode < 400) {
-            // Check if a deployment is in progress (if there is not config did not change, we force a restart to force a Docker image pull)
-            if (!this.isDeploymentLaunched())
-                this.restartApp()
+    private async checkRunningVersion(deployment: MarathonDeployment): Promise<boolean> {
+        const options = this.config.toOptions(OptionUrl.App);
+        const response = await request(options);
+        const typedResponse = JSON.parse(response);
+        const deploymentSuccessful = (typedResponse.app.version === deployment.version);
+        if (!deploymentSuccessful) {
+            throw Error('Container version incorrect');
         } else {
-            throw new Error("Marathon deployment error :".concat(jsonResponse.message));
-        }
-    }
-
-    isDeploymentLaunched() {
-        this.deploymentLaunched = false;
-        tl._writeLine("Check if deployment launched for specific application");
-        let deploymentUrl = this.config.baseUrl.concat("/v2/deployments");
-        deploymentUrl = deploymentUrl.replace(/([^:]\/)\/+/g, "$1");
-        let options: request.CoreOptions = {};
-        if (this.config.useBasicAuthentication) {
-            options.auth = {
-                user: this.config.marathonUser,
-                pass: this.config.marathonPassword
-            };
-        }
-        request(deploymentUrl, options, this.isDeploymentLaunchedCallBack.bind(this))
-        return this.deploymentLaunched;
-    }
-
-    isDeploymentLaunchedCallBack(error, response, body) {
-            // Error occured during request.
-            if (error) {
-                throw new Error("Request marathon error :".concat(error));
-            }
-            tl.debug(body);
-            let jsonResponse = JSON.parse(body);
-            let runningDeploymentMatcher = new RegExp(this.config.identifier.concat("\""), "i").exec(body.trim());
-            if (runningDeploymentMatcher) {
-                this.deploymentLaunched = true;
-            }
-        }
-
-    restartApp() {
-        tl._writeLine("Restart Application");
-        let restartUrl = this.config.baseUrl.concat("/v2/apps/", this.config.identifier , "/restart");
-        restartUrl = restartUrl.replace(/([^:]\/)\/+/g, "$1");
-        let options: (request.UriOptions & request.CoreOptions) = {
-            uri: restartUrl,
-            qs: { force: true }, //Query string data
-            method: 'POST',
-            headers: {
-                'content-type': 'application/json'
-            }
-        };
-        if (this.config.useBasicAuthentication) {
-            options.auth = {
-                user: this.config.marathonUser,
-                pass: this.config.marathonPassword
-            };
-        }
-        request(options, this.restartAppCallBack.bind(this))
-    }
-
-    restartAppCallBack(error, response, body) {
-        // Error occured during request.
-        if (error) {
-            throw new Error("Request marathon restart App error :".concat(error));
-        }
-        tl.debug(body);
-        let jsonResponse = JSON.parse(body);
-        if (response.statusCode == 200) {
-            // Check deployment
-        } else {
-            throw new Error("Marathon restart error :".concat(jsonResponse.message));
+            return deploymentSuccessful;
         }
     }
 }

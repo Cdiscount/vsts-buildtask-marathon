@@ -1,10 +1,10 @@
 {
   "manifestVersion": 1,
   "id": "vsts-marathonapi-build-tasks",
-  "version": "0.2.2",
+  "version": "1.0.2",
   "name": "Marathon API tasks",
   "description": "VSTS Build tasks which allow interactions with Mesos Marathon API.",
-  "publisher": "CdiscountAlm",
+  "publisher": "CdiscountAlm-and-Contributors",
   "targets": [
     {
       "id": "Microsoft.VisualStudio.Services"

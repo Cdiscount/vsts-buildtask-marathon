@@ -9,10 +9,10 @@
     },
     "files": [
         "Tasks/MarathonDeploy/marathonconfig.ts",
-		"Tasks/MarathonDeploy/marathonapi.ts",
-		"Tasks/MarathonDeploy/marathondeploy.ts"        
+        "Tasks/MarathonDeploy/marathonapi.ts",
+        "Tasks/MarathonDeploy/marathondeploy.ts"
     ],
-	"exclude": [
-		"node_modules"
-	]
+    "exclude": [
+        "node_modules"
+    ]
 }

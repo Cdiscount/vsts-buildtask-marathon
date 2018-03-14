@@ -3,7 +3,7 @@
   "name": "MarathonDeploy",
   "friendlyName": "Marathon Deploy",
   "description": "Deploy docker application on Marathon.",
-  "author": "Cdiscount Alm / Alban Kimor",
+  "author": "Cdiscount Alm & Contributors",
   "helpMarkDown": "",
   "category": "Deploy",
   "visibility": [
@@ -12,8 +12,8 @@
   ],
   "demands": [],
   "version": {
-    "Major": "0",
-    "Minor": "2",
+    "Major": "1",
+    "Minor": "0",
     "Patch": "2"
   },
   "minimumAgentVersion": "1.95.0",
@@ -50,6 +50,22 @@
       "defaultValue": "false",
       "required": false,
       "helpMarkDown": "Fail the task when the application was previously scaled to 0."
+    },
+    {
+      "name": "verifySSL",
+      "type": "boolean",
+      "label": "Verify SSL Certificates",
+      "defaultValue": true,
+      "required": true,
+      "helpMarkDown": "If you are running your own marathon environment with a custom ssl certificate, you can disable the validation of it."
+    },
+    {
+      "name": "maxContainerBootTime",
+      "type": "string",
+      "label": "Max allowed container boot time in seconds",
+      "defaultValue": 60,
+      "required": true,
+      "helpMarkDown": "If your container doesn't boot after X seconds, this task will fail."
     }
   ],
   "execution": {
